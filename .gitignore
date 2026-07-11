@@ -1,0 +1,6 @@
+.vs/
+bin/
+obj/
+token.json
+credentials.json
+MainFolder.json
