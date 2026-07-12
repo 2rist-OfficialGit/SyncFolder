@@ -11,6 +11,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -83,8 +84,10 @@ namespace DeskCloudSync
             await compareFileNameCloud();
             await compareFileShaCloud();
 
+            await SyncFolderStructureToCloud();
+
             await compareFileNameDesk();
-            await compareFileShaDesk();
+            //await compareFileShaDesk();
             Console.ReadKey();
         }
 
@@ -237,6 +240,44 @@ namespace DeskCloudSync
                 Console.WriteLine($"Новый файл на компьютере: {file.Name} в папке {file.Path}");
             }
         }//Нахождения новых файлов на пк за счет его имени
+        static async Task SyncFolderStructureToCloud()//Нахождение новых папок на пк
+        {
+            var uniquePaths = folderConfigDesktop.FolderDesktop.Select(f => Path.GetDirectoryName(f.Path)).Distinct().ToList();
+            foreach (var fullPath in uniquePaths)
+            {
+                string relativePath = Path.GetRelativePath(MainPathFolder, fullPath);
+                if (relativePath == "." || string.IsNullOrEmpty(relativePath))
+                {
+                    continue;
+                }
+
+                string[] folderParts = relativePath.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+                string currentParentId = FolderCloudId;
+
+                foreach (string folderName in folderParts)
+                {
+                    if (string.IsNullOrEmpty(folderName))
+                    {
+                        continue;
+                    }
+
+                    var existingFolder = folderConfigDisk.FolderDisk.FirstOrDefault(f => f.Name == folderName && f.FolderId == currentParentId);
+
+                    if (existingFolder != null)
+                    {
+                        currentParentId = existingFolder.Id;
+                    }
+                    else
+                    {
+                        string newFolderId = await CreateNewFolderCloud(folderName, currentParentId);
+                        if (!string.IsNullOrEmpty(newFolderId))
+                        {
+                            currentParentId = newFolderId;
+                        }
+                    }
+                }
+            }
+        }
         static async Task DownloadFilefromCloud(string fileId, string FileSHA, string FileFolderId, string FullPathFileCloud, bool UpdateFile)
         {
             try
@@ -286,44 +327,25 @@ namespace DeskCloudSync
         {
             try
             {
-                string fullDirectoryPath = Path.GetDirectoryName(filePath);
-                string relativePath = Path.GetRelativePath(MainPathFolder, fullDirectoryPath);
-                if (relativePath == "." || string.IsNullOrEmpty(relativePath))
+                string FolderId = string.Empty;
+                string folderPath = Path.GetDirectoryName(filePath);
+                string folderName = folderPath.Replace(MainPathFolder, "").Trim(Path.DirectorySeparatorChar);
+                string[] FolderSplit = folderName.Split(Path.DirectorySeparatorChar);
+                if (string.IsNullOrEmpty(folderName))
                 {
-                    relativePath = "";
+                    FolderId = FolderCloudId;
                 }
-                string[] folderParts = string.IsNullOrEmpty(relativePath)
-                    ? Array.Empty<string>()
-                    : relativePath.Split(Path.DirectorySeparatorChar);
-                string currentParentId = FolderCloudId;
-
-                foreach (string folderName in folderParts)
+                else
                 {
-                    await Task.Delay(1000);
-                    if (string.IsNullOrEmpty(folderName)) continue;
-                    var existingFolder = folderConfigDisk.FolderDisk.FirstOrDefault(z => z.Name == folderName && z.FolderId == currentParentId);
-                    if (existingFolder != null)
-                    {
-                        currentParentId = existingFolder.Id;
-                    }
-                    else
-                    {
-                        string newFolderId = await CreateNewFolderCloud(folderName, currentParentId);
-                        currentParentId = newFolderId;
-                        folderConfigDisk.FolderDisk.Add(new FileFolderDisk
-                        {
-                            Id = newFolderId,
-                            Name = folderName,
-                            FolderId = currentParentId
-                        });
-                    }
+                    var folder = folderConfigDisk.FolderDisk.FirstOrDefault(f => f.Name == FolderSplit[FolderSplit.Length -1]);
+                    FolderId = folder.Id;
                 }
 
                 var fileMetadata = new FileG()
                 {
-                    Name = Path.GetFileName(filePath),
+                    Name = Path.GetFileName(filename),
                     MimeType = "application/octet-stream",
-                    Parents = new List<string> { currentParentId }
+                    Parents = new List<string> { FolderId }
                 };
 
                 using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read))
@@ -352,7 +374,15 @@ namespace DeskCloudSync
                 request.Fields = "id";
 
                 var folder = await request.ExecuteAsync();
-                return folder.Id;
+                string newFolderId = folder.Id;
+
+                folderConfigDisk.FolderDisk.Add(new FileFolderDisk
+                {
+                    Id = newFolderId,
+                    Name = folderName,
+                    FolderId = parentFolderId
+                });
+                return newFolderId;
             }
             catch (Exception ex)
             {
