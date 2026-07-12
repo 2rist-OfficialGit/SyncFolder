@@ -81,8 +81,10 @@ namespace DeskCloudSync
             await checkFilesDesk();
             await checkFilesCloud();
             await compareFileNameCloud();
-            await compareFileNameDesk();
             await compareFileShaCloud();
+
+            await compareFileNameDesk();
+            await compareFileShaDesk();
             Console.ReadKey();
         }
 
@@ -102,7 +104,7 @@ namespace DeskCloudSync
             string jsonString = JsonSerializer.Serialize(Datacollect);
             string FullPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MainFolder.json");
             File.WriteAllText(FullPath, jsonString);
-        }
+        }//сбор первоначальных ссылок 
         static async Task ConnectToDisk()
         {
             try
@@ -140,17 +142,7 @@ namespace DeskCloudSync
             {
 
             }
-
-            static async Task checkFilesDeskRecursively()
-            {
-
-            }
-
-            static async Task checkFilesCloudRecursively()
-            {
-
-            }
-        }
+        }//подключение к облаку
         static async Task checkFilesDesk()
         {
             folderConfigDesktop.FolderDesktop = new List<FileFolderDesktop>();
@@ -174,13 +166,13 @@ namespace DeskCloudSync
                     }
                 }
             }
-        }
+        }//Создание списка всех файлов на пк
         static async Task checkFilesCloud()
         {
             folderConfigDisk.FolderDisk = new List<FileFolderDisk>();
 
             await checkFilesCloudRecursive(FolderCloudId, null, folderConfigDisk.FolderDisk);
-        }
+        }//Создание списка всех файлов на Облаке
         static async Task checkFilesCloudRecursive(string FolderId, string LastFolder, List<FileFolderDisk> filesList)
         {
             string pageToken = null;
@@ -225,7 +217,7 @@ namespace DeskCloudSync
                 }
                 pageToken = result.NextPageToken;
             } while (!string.IsNullOrEmpty(pageToken));
-        }
+        }//рекурсивный метод получения всех файлов с диска
         static async Task compareFileNameCloud()
         {
             var newFiles = folderConfigDisk.FolderDisk.Where(p => !folderConfigDesktop.FolderDesktop.Any(d => d.Name == p.Name)).ToList();
@@ -234,16 +226,17 @@ namespace DeskCloudSync
             {
                 await DownloadFilefromCloud(file.Id, file.SHA, file.FolderId, file.Path, false);
             }
-        }
+        }//Нахождения новых файлов на облаке за счет его имени
         static async Task compareFileNameDesk()
         {
             var newFiles = folderConfigDesktop.FolderDesktop.Where(p => !folderConfigDisk.FolderDisk.Any(d => d.Name == p.Name)).ToList();
 
             foreach (var file in newFiles)
             {
+                InstallFilefromDesk(file.Path, file.Name);
                 Console.WriteLine($"Новый файл на компьютере: {file.Name} в папке {file.Path}");
             }
-        }
+        }//Нахождения новых файлов на пк за счет его имени
         static async Task DownloadFilefromCloud(string fileId, string FileSHA, string FileFolderId, string FullPathFileCloud, bool UpdateFile)
         {
             try
@@ -279,7 +272,7 @@ namespace DeskCloudSync
             {
                 Console.WriteLine($"Ошибка: {ex.Message}");
             }
-        }
+        }//Скачивание новых файлов с диска на пк
         static async Task compareFileShaCloud()
         {
             var changedFiles = folderConfigDisk.FolderDisk.Where(diskFile => folderConfigDesktop.FolderDesktop.Any(desktopFile => desktopFile.Name == diskFile.Name && desktopFile.SHA != diskFile.SHA)).ToList();
@@ -288,7 +281,127 @@ namespace DeskCloudSync
                 await DownloadFilefromCloud(file.Id, file.SHA, file.FolderId, file.Path, true);
                 Console.WriteLine($"файл изменился на диске, его надо обновить на пк {file.Name}");
             }
-        }
+        }//Нахождение изменений файлов на диске за счет вычисления хеша файлов пк и файлов облака 
+        static async Task InstallFilefromDesk(string filePath, string filename)
+        {
+            try
+            {
+                string fullDirectoryPath = Path.GetDirectoryName(filePath);
+                string relativePath = Path.GetRelativePath(MainPathFolder, fullDirectoryPath);
+                if (relativePath == "." || string.IsNullOrEmpty(relativePath))
+                {
+                    relativePath = "";
+                }
+                string[] folderParts = string.IsNullOrEmpty(relativePath)
+                    ? Array.Empty<string>()
+                    : relativePath.Split(Path.DirectorySeparatorChar);
+                string currentParentId = FolderCloudId;
 
+                foreach (string folderName in folderParts)
+                {
+                    await Task.Delay(1000);
+                    if (string.IsNullOrEmpty(folderName)) continue;
+                    var existingFolder = folderConfigDisk.FolderDisk.FirstOrDefault(z => z.Name == folderName && z.FolderId == currentParentId);
+                    if (existingFolder != null)
+                    {
+                        currentParentId = existingFolder.Id;
+                    }
+                    else
+                    {
+                        string newFolderId = await CreateNewFolderCloud(folderName, currentParentId);
+                        currentParentId = newFolderId;
+                        folderConfigDisk.FolderDisk.Add(new FileFolderDisk
+                        {
+                            Id = newFolderId,
+                            Name = folderName,
+                            FolderId = currentParentId
+                        });
+                    }
+                }
+
+                var fileMetadata = new FileG()
+                {
+                    Name = Path.GetFileName(filePath),
+                    MimeType = "application/octet-stream",
+                    Parents = new List<string> { currentParentId }
+                };
+
+                using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read))
+                {
+                    var request = service.Files.Create(fileMetadata, fileStream, "application/octet-stream");
+                    await request.UploadAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ошибка загрузки: {ex.Message}");
+            }
+        }//Установка новых файлов пк на облако 
+        static async Task<string> CreateNewFolderCloud(string folderName, string parentFolderId)
+        {
+            try
+            {
+                var fileMetadata = new Google.Apis.Drive.v3.Data.File()
+                {
+                    Name = folderName,
+                    MimeType = "application/vnd.google-apps.folder",
+                    Parents = new List<string> { parentFolderId }
+                };
+
+                var request = service.Files.Create(fileMetadata);
+                request.Fields = "id";
+
+                var folder = await request.ExecuteAsync();
+                return folder.Id;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ошибка создания папки: {ex.Message}");
+                return null;
+            }
+        } //Создание новых папок на облаке
+        static async Task compareFileShaDesk()//Нахождение изменений файлов на пк за счет вычисления хеша файлов облака и файлов пк 
+        {
+            var changedFiles = folderConfigDesktop.FolderDesktop.Where(deskFile => folderConfigDisk.FolderDisk.Any(diskFile => diskFile.Name == deskFile.Name && diskFile.SHA != deskFile.SHA)).ToList();
+            foreach (var file in changedFiles)
+            {
+                await UpdateFile(file.Path, file.Name);
+                Console.WriteLine($"файл изменился на пк, его надо обновить на диске {file.Name}");
+            }
+        }
+        static async Task UpdateFile(string filePath, string FileName)
+        {
+            //try
+            //{
+            //    string currentParentName = Path.GetFileName(Path.GetDirectoryName(filePath));
+            //    var existingFolder = folderConfigDisk.FolderDisk.FirstOrDefault(z => z.Name == currentParentName);
+            //    var fileMetadata = new FileG()
+            //    {
+            //        Name = Path.GetFileName(filePath),
+            //        MimeType = "application/octet-stream",
+            //        Parents = new List<string> { existingFolder.Id }
+            //    };
+            //    using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read))
+            //    {
+            //        var request = service.Files.Update(fileMetadata, FileName, fileStream, "application / octet - stream");
+            //        request.Fields = "id, name, version, webViewLink, size, modifiedTime";
+
+            //        var result = await request.UploadAsync();
+
+            //        if (result.Status == UploadStatus.Completed)
+            //        {
+            //            var updatedFile = request.ResponseBody;
+            //        }
+            //        else
+            //        {
+            //            Console.WriteLine($" Ошибка обновления: {result.Exception?.Message}");
+            //        }
+            //    }
+            //}
+            //catch (Exception ex)
+            //{
+            //    Console.WriteLine($"Ошибка обновления: {ex.Message}");
+            //}
+        }
     }
 }
