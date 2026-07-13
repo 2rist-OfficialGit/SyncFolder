@@ -20,6 +20,7 @@ using static System.Net.Mime.MediaTypeNames;
 using static System.Net.WebRequestMethods;
 using File = System.IO.File;
 using FileG = Google.Apis.Drive.v3.Data.File;
+using Timer = System.Threading.Timer;
 
 namespace DeskCloudSync
 {
@@ -61,6 +62,9 @@ namespace DeskCloudSync
         public static FolderConfigDesktop folderConfigDesktop = new FolderConfigDesktop();
         public static FolderConfigDisk folderConfigDisk = new FolderConfigDisk();
 
+        private static Timer timer;
+
+
 
         static async Task Main()
         {
@@ -84,11 +88,28 @@ namespace DeskCloudSync
             await compareFileNameCloud();
             await compareFileShaCloud();
 
-            await SyncFolderStructureToCloud();
+            timer = new System.Threading.Timer(async _ => await TimerCallback(), null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
 
-            await compareFileNameDesk();
+            //await SyncFolderStructureToCloud();
+            //await compareFileNameDesk();
             //await compareFileShaDesk();
             Console.ReadKey();
+        }
+        private static async Task TimerCallback()
+        {
+            try
+            {
+                Console.WriteLine($"\n⏰ [{DateTime.Now:HH:mm:ss}] Запуск синхронизации...");
+                await checkFilesDesk();
+                await Task.Delay(500);
+                await SyncFolderStructureToCloud();
+                await compareFileNameDesk();
+                Console.WriteLine($"✅ [{DateTime.Now:HH:mm:ss}] Синхронизация завершена");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Ошибка в таймере: {ex.Message}");
+            }
         }
 
         static async Task collectFileEntries(bool KeyCloud)
@@ -148,6 +169,7 @@ namespace DeskCloudSync
         }//подключение к облаку
         static async Task checkFilesDesk()
         {
+            folderConfigDesktop.FolderDesktop.Clear();
             folderConfigDesktop.FolderDesktop = new List<FileFolderDesktop>();
             string[] filesFolder = Directory.GetFiles(MainPathFolder, "*", SearchOption.AllDirectories);
             if (filesFolder != null)
@@ -242,37 +264,41 @@ namespace DeskCloudSync
         }//Нахождения новых файлов на пк за счет его имени
         static async Task SyncFolderStructureToCloud()//Нахождение новых папок на пк
         {
-            var uniquePaths = folderConfigDesktop.FolderDesktop.Select(f => Path.GetDirectoryName(f.Path)).Distinct().ToList();
-            foreach (var fullPath in uniquePaths)
+            string[] filesFolder = Directory.GetFiles(MainPathFolder, "*", SearchOption.AllDirectories);
+            foreach (var file in filesFolder)
             {
-                string relativePath = Path.GetRelativePath(MainPathFolder, fullPath);
-                if (relativePath == "." || string.IsNullOrEmpty(relativePath))
+                var uniquePaths = folderConfigDesktop.FolderDesktop.Select(f => Path.GetDirectoryName(f.Path)).Distinct().ToList();
+                foreach (var fullPath in uniquePaths)
                 {
-                    continue;
-                }
-
-                string[] folderParts = relativePath.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
-                string currentParentId = FolderCloudId;
-
-                foreach (string folderName in folderParts)
-                {
-                    if (string.IsNullOrEmpty(folderName))
+                    string relativePath = Path.GetRelativePath(MainPathFolder, fullPath);
+                    if (relativePath == "." || string.IsNullOrEmpty(relativePath))
                     {
                         continue;
                     }
 
-                    var existingFolder = folderConfigDisk.FolderDisk.FirstOrDefault(f => f.Name == folderName && f.FolderId == currentParentId);
+                    string[] folderParts = relativePath.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+                    string currentParentId = FolderCloudId;
 
-                    if (existingFolder != null)
+                    foreach (string folderName in folderParts)
                     {
-                        currentParentId = existingFolder.Id;
-                    }
-                    else
-                    {
-                        string newFolderId = await CreateNewFolderCloud(folderName, currentParentId);
-                        if (!string.IsNullOrEmpty(newFolderId))
+                        if (string.IsNullOrEmpty(folderName))
                         {
-                            currentParentId = newFolderId;
+                            continue;
+                        }
+
+                        var existingFolder = folderConfigDisk.FolderDisk.FirstOrDefault(f => f.Name == folderName && f.FolderId == currentParentId);
+
+                        if (existingFolder != null)
+                        {
+                            currentParentId = existingFolder.Id;
+                        }
+                        else
+                        {
+                            string newFolderId = await CreateNewFolderCloud(folderName, currentParentId);
+                            if (!string.IsNullOrEmpty(newFolderId))
+                            {
+                                currentParentId = newFolderId;
+                            }
                         }
                     }
                 }
@@ -352,6 +378,24 @@ namespace DeskCloudSync
                 {
                     var request = service.Files.Create(fileMetadata, fileStream, "application/octet-stream");
                     await request.UploadAsync();
+
+                    string fileId = request.ResponseBody?.Id;
+
+                    using (var sha256 = SHA256.Create())
+                    {
+                        fileStream.Position = 0;
+                        byte[] hashBytes = sha256.ComputeHash(fileStream);
+                        string hash = BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+
+                        folderConfigDisk.FolderDisk.Add(new FileFolderDisk
+                        {
+                            Name = Path.GetFileName(filePath),
+                            Id = fileId,
+                            SHA = hash,
+                            FolderId = FolderId,
+                            Path = folderName
+                        });
+                    }
                 }
             }
             catch (Exception ex)
