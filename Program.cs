@@ -10,9 +10,12 @@ using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Pipes;
 using System.Net;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Timers;
@@ -21,6 +24,7 @@ using static System.Net.WebRequestMethods;
 using File = System.IO.File;
 using FileG = Google.Apis.Drive.v3.Data.File;
 using Timer = System.Threading.Timer;
+using WinApp = System.Windows.Forms.Application;
 
 namespace DeskCloudSync
 {
@@ -64,7 +68,18 @@ namespace DeskCloudSync
 
         private static Timer timer;
 
+        [DllImport("kernel32.dll")]
+        static extern IntPtr GetConsoleWindow();
 
+        [DllImport("user32.dll")]
+        static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        const int SW_HIDE = 0;
+        const int SW_SHOW = 5;
+
+        private static NotifyIcon trayIcon;
+        private static bool isRunning = true;
+        private static bool consoleVisible = false;
+        private static ToolStripMenuItem consoleMenuItem;
 
         static async Task Main()
         {
@@ -82,20 +97,72 @@ namespace DeskCloudSync
             {
                 await collectFileEntries(false);
             }
+
+            var handle = GetConsoleWindow();
+            ShowWindow(handle, SW_HIDE);
+            trayIcon = new NotifyIcon();
+            trayIcon.Text = "Мое консольное приложение";
+            trayIcon.Icon = SystemIcons.Application;
+            trayIcon.Visible = true;
+
+            ContextMenuStrip contextMenu = new ContextMenuStrip();
+
+            consoleMenuItem = new ToolStripMenuItem("Показать консоль");
+            consoleMenuItem.Click += (s, e) => ToggleConsole();
+
+            ToolStripSeparator separator = new ToolStripSeparator();
+
+            ToolStripMenuItem exitItem = new ToolStripMenuItem("Выход");
+            exitItem.Click += (s, e) =>
+            {
+                isRunning = false;
+                trayIcon.Visible = false;
+                trayIcon.Dispose();
+                WinApp.Exit();
+            };
+
+            contextMenu.Items.Add(consoleMenuItem);
+            contextMenu.Items.Add(separator);
+            contextMenu.Items.Add(exitItem);
+            trayIcon.ContextMenuStrip = contextMenu;
+
+            trayIcon.DoubleClick += (s, e) => ToggleConsole();
+            Thread workerThread = new Thread(BackgroundWork);
+            workerThread.IsBackground = true;
+            workerThread.Start();
+            WinApp.Run();
+
+            //await compareFileShaDesk();
+            Console.ReadKey();
+        }
+
+        static async void BackgroundWork()
+        {
             await ConnectToDisk();
             await checkFilesDesk();
             await checkFilesCloud();
             await compareFileNameCloud();
             await compareFileShaCloud();
-
             timer = new System.Threading.Timer(async _ => await TimerCallback(), null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
+        }//Первоначальная проверка файлов
+        static void ToggleConsole()
+        {
+            var handle = GetConsoleWindow();
 
-            //await SyncFolderStructureToCloud();
-            //await compareFileNameDesk();
-            //await compareFileShaDesk();
-            Console.ReadKey();
-        }
-        private static async Task TimerCallback()
+            if (consoleVisible)
+            {
+                ShowWindow(handle, SW_HIDE);
+                consoleVisible = false;
+                consoleMenuItem.Text = "Показать консоль";
+            }
+            else
+            {
+                ShowWindow(handle, SW_SHOW);
+                consoleVisible = true;
+                consoleMenuItem.Text = "Скрыть консоль";
+            }
+        }//переключение между отображением консоли
+        static async Task TimerCallback()
         {
             try
             {
@@ -110,8 +177,7 @@ namespace DeskCloudSync
             {
                 Console.WriteLine($"❌ Ошибка в таймере: {ex.Message}");
             }
-        }
-
+        }//цикл на проверку  файлов
         static async Task collectFileEntries(bool KeyCloud)
         {
             if(!KeyCloud)
@@ -138,7 +204,7 @@ namespace DeskCloudSync
                 if (!File.Exists(PathKeyCloud))
                 {
                     Console.WriteLine($"ОШИБКА: Файл {PathKeyCloud} не найден!");
-                    collectFileEntries(true);
+                    await collectFileEntries(true);
                     ConnectToDisk();
                 }
 
