@@ -141,7 +141,7 @@ namespace DeskCloudSync
             await ConnectToDisk();
             await checkFilesDesk();
             await checkFilesCloud();
-            await compareFileNameCloud();
+            await compareFileNameCloud(false);
             await compareFileShaCloud();
             timer = new System.Threading.Timer(async _ => await TimerCallback(), null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
         }//Первоначальная проверка файлов
@@ -166,16 +166,18 @@ namespace DeskCloudSync
         {
             try
             {
-                Console.WriteLine($"\n⏰ [{DateTime.Now:HH:mm:ss}] Запуск синхронизации...");
+                Console.WriteLine($"\n[{DateTime.Now:HH:mm:ss}] Запуск синхронизации...");
                 await checkFilesDesk();
+                await compareFileNameCloud(true);
                 await Task.Delay(500);
                 await SyncFolderStructureToCloud();
                 await compareFileNameDesk();
-                Console.WriteLine($"✅ [{DateTime.Now:HH:mm:ss}] Синхронизация завершена");
+                await compareFileShaDesk();
+                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Синхронизация завершена");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ Ошибка в таймере: {ex.Message}");
+                Console.WriteLine($"Ошибка в таймере: {ex.Message}");
             }
         }//цикл на проверку  файлов
         static async Task collectFileEntries(bool KeyCloud)
@@ -225,12 +227,36 @@ namespace DeskCloudSync
                 {
                     HttpClientInitializer = credential
                 });
-                Console.WriteLine("Облако успешно подключено");
+                bool cheakConnection;
+                try
+                {
+                    using (var client = new HttpClient())
+                    {
+                        client.Timeout = TimeSpan.FromSeconds(5);
+                        var response = client.GetAsync("https://8.8.8.8").Result;
+                        cheakConnection =  response.IsSuccessStatusCode;
+                    }
+                }
+                catch
+                {
+                    cheakConnection = false;
+                }
+
+                if (cheakConnection)
+                {
+                    Console.WriteLine("Облако успешно подключено");
+                }
+                else
+                {
+                    Console.WriteLine("Проблема подключения, повтор подключения...");
+                    await Task.Delay(2500);
+                    await ConnectToDisk();
+                }
 
             }
-            catch
+            catch(Exception ex)
             {
-
+                Console.WriteLine($"Ошибка загрузки: {ex.Message}");
             }
         }//подключение к облаку
         static async Task checkFilesDesk()
@@ -309,13 +335,41 @@ namespace DeskCloudSync
                 pageToken = result.NextPageToken;
             } while (!string.IsNullOrEmpty(pageToken));
         }//рекурсивный метод получения всех файлов с диска
-        static async Task compareFileNameCloud()
+        static async Task DeletFileDesk()
+        {
+            //считываем имена файлов в логе удаления
+            string NameDeletFile = string.Empty;
+            //тут цикл фореч
+            string DeletPathFile = folderConfigDesktop.FolderDesktop.FirstOrDefault(z => z.Name == NameDeletFile).Path;
+            FileInfo fi = new FileInfo(DeletPathFile);
+            fi.Delete();
+        }//Удаление файлов на пк
+        static async Task compareFileNameCloud(bool checkRenameFile)
         {
             var newFiles = folderConfigDisk.FolderDisk.Where(p => !folderConfigDesktop.FolderDesktop.Any(d => d.Name == p.Name)).ToList();
-
-            foreach (var file in newFiles)
+            if(newFiles != null)
             {
-                await DownloadFilefromCloud(file.Id, file.SHA, file.FolderId, file.Path, false);
+                foreach (var file in newFiles)
+                {
+                    if (!checkRenameFile )
+                    {
+                        await DownloadFilefromCloud(file.Id, file.SHA, file.FolderId, file.Path, false);
+                    }
+                    else if (file.SHA != null && file.Name != "File_Delete_Log.txt")
+                    {
+                        try
+                        {
+                            var request = service.Files.Delete(file.Id);
+
+                            await request.ExecuteAsync();
+                            folderConfigDisk.FolderDisk.Remove(file);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Ошибка удаления: {ex.Message}");
+                        }
+                    }
+                }
             }
         }//Нахождения новых файлов на облаке за счет его имени
         static async Task compareFileNameDesk()
@@ -377,29 +431,32 @@ namespace DeskCloudSync
                 var request = service.Files.Get(fileId);
                 var fileMetadata = await request.ExecuteAsync();
                 string fileName = fileMetadata.Name;
-                string fullPath = Path.Combine(MainPathFolder, fileName);
+                if (fileMetadata.Name != "File_Delete_Log.txt")
+                {
+                    string fullPath = Path.Combine(MainPathFolder, fileName);
 
-                if (FileFolderId != FolderCloudId)
-                {
-                    fullPath = Path.Combine(MainPathFolder, FullPathFileCloud, fileName);
-                }
-                if (FileSHA != null)
-                {
-                    if(UpdateFile)
+                    if (FileFolderId != FolderCloudId)
                     {
-                        FileInfo fileInf = new FileInfo(fullPath);
-                        fileInf.Delete();
+                        fullPath = Path.Combine(MainPathFolder, FullPathFileCloud, fileName);
                     }
-                    using (var stream = new FileStream(fullPath, FileMode.Create, FileAccess.Write))
+                    if (FileSHA != null)
                     {
-                        var result = await request.DownloadAsync(stream);
+                        if (UpdateFile)
+                        {
+                            FileInfo fileInf = new FileInfo(fullPath);
+                            fileInf.Delete();
+                        }
+                        using (var stream = new FileStream(fullPath, FileMode.Create, FileAccess.Write))
+                        {
+                            var result = await request.DownloadAsync(stream);
+                        }
                     }
+                    else
+                    {
+                        Directory.CreateDirectory(fullPath);
+                    }
+                    await checkFilesDesk();
                 }
-                else
-                {
-                    Directory.CreateDirectory(fullPath);
-                }
-                await checkFilesDesk();
             }
             catch (Exception ex)
             {
@@ -511,37 +568,46 @@ namespace DeskCloudSync
         }
         static async Task UpdateFile(string filePath, string FileName)
         {
-            //try
-            //{
-            //    string currentParentName = Path.GetFileName(Path.GetDirectoryName(filePath));
-            //    var existingFolder = folderConfigDisk.FolderDisk.FirstOrDefault(z => z.Name == currentParentName);
-            //    var fileMetadata = new FileG()
-            //    {
-            //        Name = Path.GetFileName(filePath),
-            //        MimeType = "application/octet-stream",
-            //        Parents = new List<string> { existingFolder.Id }
-            //    };
-            //    using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read))
-            //    {
-            //        var request = service.Files.Update(fileMetadata, FileName, fileStream, "application / octet - stream");
-            //        request.Fields = "id, name, version, webViewLink, size, modifiedTime";
+            try
+            {
+                string currentParentName = Path.GetFileName(Path.GetDirectoryName(filePath));
+                string SelectFolderId = string.Empty;
+                var existingFolder = folderConfigDisk.FolderDisk.FirstOrDefault(z => z.Name == currentParentName);
+                string SelectFileId = folderConfigDisk.FolderDisk.FirstOrDefault(z => z.Name == FileName).Id;
+                if(existingFolder == null)
+                {
+                    SelectFolderId = FolderCloudId;
+                }
+                else
+                {
+                    SelectFolderId = existingFolder.Id;
+                    Console.WriteLine(existingFolder.Name);
+                }
+                var fileMetadata = new FileG()
+                {
+                    Name = FileName,
+                };
+                using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read))
+                {
+                    var request = service.Files.Update(fileMetadata, SelectFileId, fileStream, "application/octet-stream");
+                    request.Fields = "id, name, version, webViewLink, size, modifiedTime";
 
-            //        var result = await request.UploadAsync();
+                    var result = await request.UploadAsync();
 
-            //        if (result.Status == UploadStatus.Completed)
-            //        {
-            //            var updatedFile = request.ResponseBody;
-            //        }
-            //        else
-            //        {
-            //            Console.WriteLine($" Ошибка обновления: {result.Exception?.Message}");
-            //        }
-            //    }
-            //}
-            //catch (Exception ex)
-            //{
-            //    Console.WriteLine($"Ошибка обновления: {ex.Message}");
-            //}
-        }
+                    if (result.Status == UploadStatus.Completed)
+                    {
+                        var updatedFile = request.ResponseBody;
+                    }
+                    else
+                    {
+                        Console.WriteLine($" Ошибка обновления: {result.Exception?.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ошибка обновления: {ex.Message}");
+            }
+        }//Обновление файлов диска при зменение файла на пк
     }
 }
