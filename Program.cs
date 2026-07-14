@@ -101,8 +101,8 @@ namespace DeskCloudSync
             var handle = GetConsoleWindow();
             ShowWindow(handle, SW_HIDE);
             trayIcon = new NotifyIcon();
-            trayIcon.Text = "Мое консольное приложение";
             trayIcon.Icon = SystemIcons.Application;
+            trayIcon.Text = "Мое консольное приложение";
             trayIcon.Visible = true;
 
             ContextMenuStrip contextMenu = new ContextMenuStrip();
@@ -143,6 +143,7 @@ namespace DeskCloudSync
             await checkFilesCloud();
             await compareFileNameCloud(false);
             await compareFileShaCloud();
+            await DeletFileDesk();
             timer = new System.Threading.Timer(async _ => await TimerCallback(), null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
         }//Первоначальная проверка файлов
         static void ToggleConsole()
@@ -337,12 +338,33 @@ namespace DeskCloudSync
         }//рекурсивный метод получения всех файлов с диска
         static async Task DeletFileDesk()
         {
-            //считываем имена файлов в логе удаления
-            string NameDeletFile = string.Empty;
-            //тут цикл фореч
-            string DeletPathFile = folderConfigDesktop.FolderDesktop.FirstOrDefault(z => z.Name == NameDeletFile).Path;
-            FileInfo fi = new FileInfo(DeletPathFile);
-            fi.Delete();
+            string PathLog = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "File_Delete_Log.txt");
+            if (Path.Exists(PathLog))
+            {
+                string NameDeletFile = File.ReadAllText(PathLog);
+                var AllNameFile = NameDeletFile.Split('\n');
+                if (AllNameFile != null)
+                {
+                    foreach (var FileDelet in AllNameFile)
+                    {
+                        if (string.IsNullOrEmpty(FileDelet))
+                        {
+                            continue;
+                        }
+                        var DeletPathFile = folderConfigDesktop.FolderDesktop.FirstOrDefault(z => z.Name == FileDelet);
+                        if (DeletPathFile != null)
+                        {
+                            FileInfo fi = new FileInfo(DeletPathFile.Path);
+                            fi.Delete();
+                        }
+                        else
+                        {
+                            Console.WriteLine($"Ошибка, возможно файл {FileDelet} уже удален");
+                        }
+                    }
+                    File.WriteAllText(PathLog, "");
+                }
+            }
         }//Удаление файлов на пк
         static async Task compareFileNameCloud(bool checkRenameFile)
         {
@@ -360,9 +382,12 @@ namespace DeskCloudSync
                         try
                         {
                             var request = service.Files.Delete(file.Id);
-
                             await request.ExecuteAsync();
                             folderConfigDisk.FolderDisk.Remove(file);
+
+                            string FileLogPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "File_Delete_Log.txt");
+                            File.WriteAllText(FileLogPath, $"{file.Name}\n");
+                            await InstallFilefromDesk(FileLogPath, "File_Delete_Log.txt");
                         }
                         catch (Exception ex)
                         {
@@ -431,32 +456,34 @@ namespace DeskCloudSync
                 var request = service.Files.Get(fileId);
                 var fileMetadata = await request.ExecuteAsync();
                 string fileName = fileMetadata.Name;
-                if (fileMetadata.Name != "File_Delete_Log.txt")
-                {
-                    string fullPath = Path.Combine(MainPathFolder, fileName);
 
-                    if (FileFolderId != FolderCloudId)
-                    {
-                        fullPath = Path.Combine(MainPathFolder, FullPathFileCloud, fileName);
-                    }
-                    if (FileSHA != null)
-                    {
-                        if (UpdateFile)
-                        {
-                            FileInfo fileInf = new FileInfo(fullPath);
-                            fileInf.Delete();
-                        }
-                        using (var stream = new FileStream(fullPath, FileMode.Create, FileAccess.Write))
-                        {
-                            var result = await request.DownloadAsync(stream);
-                        }
-                    }
-                    else
-                    {
-                        Directory.CreateDirectory(fullPath);
-                    }
-                    await checkFilesDesk();
+                string fullPath = Path.Combine(MainPathFolder, fileName);
+                if (fileMetadata.Name == "File_Delete_Log.txt")
+                {
+                    fullPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, fileName);
                 }
+
+                if (FileFolderId != FolderCloudId)
+                {
+                    fullPath = Path.Combine(MainPathFolder, FullPathFileCloud, fileName);
+                }
+                if (FileSHA != null)
+                {
+                    if (UpdateFile)
+                    {
+                        FileInfo fileInf = new FileInfo(fullPath);
+                        fileInf.Delete();
+                    }
+                    using (var stream = new FileStream(fullPath, FileMode.Create, FileAccess.Write))
+                    {
+                        var result = await request.DownloadAsync(stream);
+                    }
+                }
+                else
+                {
+                    Directory.CreateDirectory(fullPath);
+                }
+                await checkFilesDesk();
             }
             catch (Exception ex)
             {
@@ -480,13 +507,13 @@ namespace DeskCloudSync
                 string folderPath = Path.GetDirectoryName(filePath);
                 string folderName = folderPath.Replace(MainPathFolder, "").Trim(Path.DirectorySeparatorChar);
                 string[] FolderSplit = folderName.Split(Path.DirectorySeparatorChar);
-                if (string.IsNullOrEmpty(folderName))
+                if (string.IsNullOrEmpty(folderName) || filename == "File_Delete_Log.txt")
                 {
                     FolderId = FolderCloudId;
                 }
                 else
                 {
-                    var folder = folderConfigDisk.FolderDisk.FirstOrDefault(f => f.Name == FolderSplit[FolderSplit.Length -1]);
+                    var folder = folderConfigDisk.FolderDisk.FirstOrDefault(f => f.Name == FolderSplit[FolderSplit.Length - 1]);
                     FolderId = folder.Id;
                 }
 
