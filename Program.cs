@@ -21,6 +21,7 @@ using System.Threading.Tasks;
 using System.Timers;
 using static System.Net.Mime.MediaTypeNames;
 using static System.Net.WebRequestMethods;
+
 using File = System.IO.File;
 using FileG = Google.Apis.Drive.v3.Data.File;
 using Timer = System.Threading.Timer;
@@ -53,7 +54,6 @@ namespace DeskCloudSync
     {
         public List<FileFolderDisk> FolderDisk { get; set; } = new List<FileFolderDisk>();
     }
-
 
     class Program
     {
@@ -101,7 +101,7 @@ namespace DeskCloudSync
             var handle = GetConsoleWindow();
             ShowWindow(handle, SW_HIDE);
             trayIcon = new NotifyIcon();
-            trayIcon.Icon = SystemIcons.Application;
+            trayIcon.Icon = new Icon(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources", "Germes.ico"));
             trayIcon.Text = "Мое консольное приложение";
             trayIcon.Visible = true;
 
@@ -131,9 +131,6 @@ namespace DeskCloudSync
             workerThread.IsBackground = true;
             workerThread.Start();
             WinApp.Run();
-
-            //await compareFileShaDesk();
-            Console.ReadKey();
         }
 
         static async void BackgroundWork()
