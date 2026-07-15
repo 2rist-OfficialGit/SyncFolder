@@ -61,6 +61,8 @@ namespace DeskCloudSync
         public static string FolderCloudId = string.Empty;
         public static string PathKeyCloud = string.Empty;
 
+        public static bool ConnectResult = false;
+
         public static DriveService service;
 
         public static FolderConfigDesktop folderConfigDesktop = new FolderConfigDesktop();
@@ -95,6 +97,7 @@ namespace DeskCloudSync
             }
             else
             {
+                ConnectResult = true;
                 await collectFileEntries(false);
             }
 
@@ -135,7 +138,10 @@ namespace DeskCloudSync
 
         static async void BackgroundWork()
         {
-            await ConnectToDisk();
+            if(!ConnectResult)
+            {
+                await ConnectToDisk();
+            }
             await checkFilesDesk();
             await checkFilesCloud();
             await compareFileNameCloud(false);
@@ -180,21 +186,24 @@ namespace DeskCloudSync
         }//цикл на проверку  файлов
         static async Task collectFileEntries(bool KeyCloud)
         {
-            if(!KeyCloud)
+            Console.WriteLine("Укажите путь до ключа облачного хранилища");
+            PathKeyCloud = Console.ReadLine();
+            if (!KeyCloud)
             {
                 Console.WriteLine("Укажите путь до основной папки");
                 MainPathFolder = Console.ReadLine();
-                Console.WriteLine("Укажите Id папки облачного хранилища");
-                FolderCloudId = Console.ReadLine();
+                await ConnectToDisk();
             }
-            Console.WriteLine("Укажите путь до ключа облачного хранилища");
-            PathKeyCloud = Console.ReadLine();
 
+        }//сбор первоначальных ссылок 
+
+        static async void CreateJsonFile()
+        {
             var Datacollect = new { MainFolder = MainPathFolder, CloudId = FolderCloudId, Key = PathKeyCloud };
             string jsonString = JsonSerializer.Serialize(Datacollect);
             string FullPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MainFolder.json");
             File.WriteAllText(FullPath, jsonString);
-        }//сбор первоначальных ссылок 
+        }
         static async Task ConnectToDisk()
         {
             try
@@ -249,6 +258,11 @@ namespace DeskCloudSync
                     Console.WriteLine("Проблема подключения, повтор подключения...");
                     await Task.Delay(2500);
                     await ConnectToDisk();
+                }
+                if(string.IsNullOrEmpty(FolderCloudId))
+                {
+                    FolderCloudId = await CreateNewFolderCloud(Path.GetFileName(MainPathFolder), "root");
+                    CreateJsonFile();
                 }
 
             }
@@ -576,13 +590,15 @@ namespace DeskCloudSync
 
                 var folder = await request.ExecuteAsync();
                 string newFolderId = folder.Id;
-
-                folderConfigDisk.FolderDisk.Add(new FileFolderDisk
+                if(parentFolderId != "root")
                 {
-                    Id = newFolderId,
-                    Name = folderName,
-                    FolderId = parentFolderId
-                });
+                    folderConfigDisk.FolderDisk.Add(new FileFolderDisk
+                    {
+                        Id = newFolderId,
+                        Name = folderName,
+                        FolderId = parentFolderId
+                    });
+                }
                 return newFolderId;
             }
             catch (Exception ex)
