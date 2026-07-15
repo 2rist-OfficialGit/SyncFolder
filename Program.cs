@@ -339,7 +339,7 @@ namespace DeskCloudSync
             if (Path.Exists(PathLog))
             {
                 string NameDeletFile = File.ReadAllText(PathLog);
-                var AllNameFile = NameDeletFile.Split('\n');
+                var AllNameFile = NameDeletFile.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries);
                 if (AllNameFile != null)
                 {
                     foreach (var FileDelet in AllNameFile)
@@ -366,8 +366,10 @@ namespace DeskCloudSync
         static async Task compareFileNameCloud(bool checkRenameFile)
         {
             var newFiles = folderConfigDisk.FolderDisk.Where(p => !folderConfigDesktop.FolderDesktop.Any(d => d.Name == p.Name)).ToList();
+            bool NewFileDelet = false;
             if(newFiles != null)
             {
+                string FileLogPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "File_Delete_Log.txt");
                 foreach (var file in newFiles)
                 {
                     if (!checkRenameFile )
@@ -381,16 +383,24 @@ namespace DeskCloudSync
                             var request = service.Files.Delete(file.Id);
                             await request.ExecuteAsync();
                             folderConfigDisk.FolderDisk.Remove(file);
-
-                            string FileLogPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "File_Delete_Log.txt");
-                            File.WriteAllText(FileLogPath, $"{file.Name}\n");
-                            await InstallFilefromDesk(FileLogPath, "File_Delete_Log.txt");
+                            File.AppendAllText(FileLogPath, file.Name + Environment.NewLine);
+                            NewFileDelet = true;
                         }
                         catch (Exception ex)
                         {
                             Console.WriteLine($"Ошибка удаления: {ex.Message}");
                         }
                     }
+                }
+                if(NewFileDelet)
+                {
+                    var FileLog = folderConfigDisk.FolderDisk.FirstOrDefault(p => p.Name == "File_Delete_Log.txt");
+                    if (FileLog != null)
+                    {
+                        var requestLog = service.Files.Delete(FileLog.Id);
+                        await requestLog.ExecuteAsync();
+                    }
+                    await InstallFilefromDesk(FileLogPath, "File_Delete_Log.txt");
                 }
             }
         }//Нахождения новых файлов на облаке за счет его имени
